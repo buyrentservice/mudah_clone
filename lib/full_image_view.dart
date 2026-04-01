@@ -13,7 +13,8 @@ class FullImageView extends StatefulWidget {
   State<FullImageView> createState() => _FullImageViewState();
 }
 
-class _FullImageViewState extends State<FullImageView> {
+class _FullImageViewState extends State<FullImageView>
+    with SingleTickerProviderStateMixin {
   late img.Image originalImage;
   late img.Image currentImage;
   Uint8List? displayBytes;
@@ -23,16 +24,46 @@ class _FullImageViewState extends State<FullImageView> {
 
   // Rotation & ruler
   bool showRuler = false;
-  double currentRotation = 0; // degrees (-180 to 180 range for display)
+  double currentRotation = 0;
   double dragStartX = 0;
   double rotationStart = 0;
   double rotationVelocity = 0;
   final double friction = 0.95;
 
+  // Ruler show/hide animation
+  late AnimationController _rulerAnimController;
+  late Animation<double> _rulerFadeAnim;
+  late Animation<Offset> _rulerSlideAnim;
+
   @override
   void initState() {
     super.initState();
     _loadImage();
+
+    _rulerAnimController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 280),
+      reverseDuration: const Duration(milliseconds: 200),
+    );
+    _rulerFadeAnim = CurvedAnimation(
+      parent: _rulerAnimController,
+      curve: Curves.easeOut,
+      reverseCurve: Curves.easeIn,
+    );
+    _rulerSlideAnim = Tween<Offset>(
+      begin: const Offset(0, 0.3),
+      end: Offset.zero,
+    ).animate(CurvedAnimation(
+      parent: _rulerAnimController,
+      curve: Curves.easeOutCubic,
+      reverseCurve: Curves.easeIn,
+    ));
+  }
+
+  @override
+  void dispose() {
+    _rulerAnimController.dispose();
+    super.dispose();
   }
 
   Future<void> _loadImage() async {
@@ -61,7 +92,7 @@ class _FullImageViewState extends State<FullImageView> {
     }
     currentImage = img.copyRotate(originalImage, angle: currentRotation);
     _updateDisplay();
-    _toggleRuler();
+    _showRuler();
   }
 
   void _rotate90() {
@@ -134,11 +165,20 @@ class _FullImageViewState extends State<FullImageView> {
     }
   }
 
-  void _toggleRuler() {
+  void _showRuler() {
     setState(() {
       showRuler = true;
     });
+    _rulerAnimController.forward();
     Future.delayed(const Duration(seconds: 3), () {
+      if (mounted && showRuler) {
+        _hideRuler();
+      }
+    });
+  }
+
+  void _hideRuler() {
+    _rulerAnimController.reverse().then((_) {
       if (mounted) {
         setState(() {
           showRuler = false;
@@ -167,14 +207,12 @@ class _FullImageViewState extends State<FullImageView> {
     });
   }
 
-  /// Returns a display-friendly rotation string (e.g., "-0.0°", "12.3°")
+  /// Display-friendly rotation string (e.g., "-0.0", "12.3")
   String _getDisplayRotation() {
     double displayVal = currentRotation;
-    // Normalize to -180..180 range for display
     if (displayVal > 180) {
       displayVal -= 360;
     }
-    // Show sign for negative, but also show "-0.0" when exactly 0 or 360
     if (displayVal.abs() < 0.05) {
       return '-0.0\u00B0';
     }
@@ -211,13 +249,19 @@ class _FullImageViewState extends State<FullImageView> {
             ),
           ),
 
-          // Ruler container
+          // Ruler with slide + fade animation
           if (showRuler)
             Positioned(
               left: 0,
               right: 0,
               bottom: 80,
-              child: _buildRulerWidget(),
+              child: SlideTransition(
+                position: _rulerSlideAnim,
+                child: FadeTransition(
+                  opacity: _rulerFadeAnim,
+                  child: _buildRulerCard(),
+                ),
+              ),
             ),
 
           // Toolbar icons
@@ -251,144 +295,175 @@ class _FullImageViewState extends State<FullImageView> {
     );
   }
 
-  /// Builds the ruler widget matching the reference screenshot design:
-  /// - Gray circle X (reset) button on left
-  /// - Orange degree label on top center
-  /// - Orange center indicator line
-  /// - Gradient-opacity tick marks (dark center, fading to light edges)
-  /// - 90-degree rotate button on right
-  Widget _buildRulerWidget() {
+  /// Pro ruler card with shadow, animations, and clean layout
+  Widget _buildRulerCard() {
     return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 12),
+      margin: const EdgeInsets.symmetric(horizontal: 16),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(18),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.18),
+            blurRadius: 20,
+            spreadRadius: 0,
+            offset: const Offset(0, 6),
+          ),
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 4,
+            offset: const Offset(0, 1),
+          ),
+        ],
       ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          // Degree label in orange
-          Padding(
-            padding: const EdgeInsets.only(top: 8),
-            child: Text(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 10),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Orange degree label
+            Text(
               _getDisplayRotation(),
               style: const TextStyle(
                 color: Color(0xFFFF6D00),
-                fontSize: 16,
-                fontWeight: FontWeight.w600,
+                fontSize: 15,
+                fontWeight: FontWeight.w700,
+                letterSpacing: 0.5,
+                height: 1.0,
               ),
             ),
-          ),
-          // Ruler row: X button, ruler ticks, 90 button
-          SizedBox(
-            height: 56,
-            child: Row(
-              children: [
-                // X (reset) button - gray circle
-                Padding(
-                  padding: const EdgeInsets.only(left: 10),
-                  child: GestureDetector(
-                    onTap: () {
-                      setState(() {
-                        currentRotation = 0;
-                        currentImage = img.copyRotate(
-                          originalImage,
-                          angle: currentRotation,
-                        );
-                        _updateDisplay();
-                      });
-                    },
-                    child: Container(
-                      width: 32,
-                      height: 32,
-                      decoration: BoxDecoration(
-                        color: Colors.grey.shade400,
-                        shape: BoxShape.circle,
-                      ),
-                      child: const Icon(
-                        Icons.close,
-                        color: Colors.white,
-                        size: 18,
-                      ),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                // Ruler ticks area
-                Expanded(
-                  child: GestureDetector(
-                    onHorizontalDragStart: (details) {
-                      dragStartX = details.localPosition.dx;
-                      rotationStart = currentRotation;
-                      rotationVelocity = 0;
-                    },
-                    onHorizontalDragUpdate: (details) {
-                      final dx = details.localPosition.dx - dragStartX;
-                      final deltaRotation = dx / 3;
-                      setState(() {
-                        currentRotation =
-                            (rotationStart + deltaRotation) % 360;
-                        if (currentRotation < 0) {
-                          currentRotation += 360;
-                        }
-                        currentImage = img.copyRotate(
-                          originalImage,
-                          angle: currentRotation,
-                        );
-                        _updateDisplay();
-                        rotationVelocity = details.delta.dx / 3;
-                      });
-                    },
-                    onHorizontalDragEnd: (details) {
-                      _startInertia();
-                    },
-                    child: ClipRect(
-                      child: CustomPaint(
-                        size: const Size(double.infinity, 56),
-                        painter: GradientRulerPainter(currentRotation),
-                      ),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                // 90-degree rotate button
-                Padding(
-                  padding: const EdgeInsets.only(right: 10),
-                  child: GestureDetector(
-                    onTap: _rotate90,
-                    child: SizedBox(
-                      width: 36,
-                      height: 36,
-                      child: Stack(
-                        alignment: Alignment.center,
-                        children: [
-                          Icon(
-                            Icons.rotate_right,
-                            color: Colors.grey.shade600,
-                            size: 28,
-                          ),
-                          Positioned(
-                            right: 0,
-                            top: 0,
-                            child: Text(
-                              '90\u00B0',
-                              style: TextStyle(
-                                color: Colors.grey.shade600,
-                                fontSize: 8,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-              ],
+            const SizedBox(height: 8),
+            // Row: X button | ruler ticks | 90 button
+            SizedBox(
+              height: 44,
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  const SizedBox(width: 8),
+                  _buildCloseButton(),
+                  const SizedBox(width: 6),
+                  Expanded(child: _buildDraggableRuler()),
+                  const SizedBox(width: 6),
+                  _buildRotate90Button(),
+                  const SizedBox(width: 8),
+                ],
+              ),
             ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Gray circle close/reset button
+  Widget _buildCloseButton() {
+    return GestureDetector(
+      onTap: () {
+        setState(() {
+          currentRotation = 0;
+          currentImage = img.copyRotate(
+            originalImage,
+            angle: currentRotation,
+          );
+          _updateDisplay();
+        });
+      },
+      child: Container(
+        width: 28,
+        height: 28,
+        decoration: BoxDecoration(
+          color: const Color(0xFFB0B0B0),
+          shape: BoxShape.circle,
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.10),
+              blurRadius: 3,
+              offset: const Offset(0, 1),
+            ),
+          ],
+        ),
+        child: const Center(
+          child: Icon(
+            Icons.close_rounded,
+            color: Colors.white,
+            size: 16,
           ),
-          const SizedBox(height: 6),
-        ],
+        ),
+      ),
+    );
+  }
+
+  /// Draggable ruler area with clipped custom paint
+  Widget _buildDraggableRuler() {
+    return GestureDetector(
+      onHorizontalDragStart: (details) {
+        dragStartX = details.localPosition.dx;
+        rotationStart = currentRotation;
+        rotationVelocity = 0;
+      },
+      onHorizontalDragUpdate: (details) {
+        final dx = details.localPosition.dx - dragStartX;
+        final deltaRotation = dx / 3;
+        setState(() {
+          currentRotation = (rotationStart + deltaRotation) % 360;
+          if (currentRotation < 0) {
+            currentRotation += 360;
+          }
+          currentImage = img.copyRotate(
+            originalImage,
+            angle: currentRotation,
+          );
+          _updateDisplay();
+          rotationVelocity = details.delta.dx / 3;
+        });
+      },
+      onHorizontalDragEnd: (details) {
+        _startInertia();
+      },
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(4),
+        child: CustomPaint(
+          size: const Size(double.infinity, 44),
+          painter: ProRulerPainter(currentRotation),
+        ),
+      ),
+    );
+  }
+
+  /// 90-degree quick-rotate button
+  Widget _buildRotate90Button() {
+    return GestureDetector(
+      onTap: _rotate90,
+      child: SizedBox(
+        width: 32,
+        height: 32,
+        child: Stack(
+          alignment: Alignment.center,
+          children: [
+            const Icon(
+              Icons.rotate_right_rounded,
+              color: Color(0xFF5A5A5A),
+              size: 24,
+            ),
+            Positioned(
+              right: 0,
+              top: 0,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 1),
+                child: const Text(
+                  '90\u00B0',
+                  style: TextStyle(
+                    color: Color(0xFF5A5A5A),
+                    fontSize: 7,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: -0.3,
+                    height: 1.0,
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -413,86 +488,109 @@ class _FullImageViewState extends State<FullImageView> {
   }
 }
 
-/// Custom painter for the ruler with gradient-opacity tick marks.
+/// Professional ruler painter with smooth gradient-opacity tick marks.
 ///
-/// Design matches the reference screenshot:
-/// - Shows a range of ~90 degrees centered on the current rotation
-/// - Center indicator is a thick orange line with rounded caps
-/// - Tick marks fade from dark (center) to light gray (edges)
-/// - Major ticks (every 10°) are taller; minor ticks are shorter
-class GradientRulerPainter extends CustomPainter {
+/// Matches iOS/Samsung photo editor style:
+/// - +/-45 degree visible window centered on current rotation
+/// - Orange pill-shaped center indicator with subtle glow
+/// - Smooth cubic (smoothstep) opacity falloff from center to edges
+/// - Major (10deg), medium (5deg), and minor (1deg) tick heights
+/// - Vertically centered ticks for a clean, balanced look
+class ProRulerPainter extends CustomPainter {
   final double rotation;
 
-  /// Visible range in degrees on each side of center
-  static const double visibleRange = 45.0;
+  static const double _visibleRange = 45.0;
+  static const double _tickSpacing = 6.0;
 
-  /// Spacing between each degree tick in pixels
-  static const double degreeSpacing = 6.0;
-
-  GradientRulerPainter(this.rotation);
+  ProRulerPainter(this.rotation);
 
   @override
   void paint(Canvas canvas, Size size) {
     final centerX = size.width / 2;
-    final tickBottom = size.height - 4;
+    final centerY = size.height / 2;
 
-    // Draw center orange indicator line
-    final centerPaint = Paint()
-      ..color = const Color(0xFFFF6D00)
-      ..strokeWidth = 3.5
-      ..strokeCap = StrokeCap.round;
-    canvas.drawLine(
-      Offset(centerX, 8),
-      Offset(centerX, tickBottom),
-      centerPaint,
+    // --- Orange center indicator (pill with glow) ---
+    const indicatorWidth = 3.6;
+    const indicatorHeight = 32.0;
+    final indicatorRect = RRect.fromRectAndRadius(
+      Rect.fromCenter(
+        center: Offset(centerX, centerY + 2),
+        width: indicatorWidth,
+        height: indicatorHeight,
+      ),
+      const Radius.circular(2.0),
     );
 
-    // Draw tick marks with gradient opacity
+    // Soft glow behind indicator
+    canvas.drawRRect(
+      indicatorRect.inflate(2.0),
+      Paint()
+        ..color = const Color(0xFFFF6D00).withOpacity(0.12)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3),
+    );
+
+    // Solid indicator
+    canvas.drawRRect(
+      indicatorRect,
+      Paint()..color = const Color(0xFFFF6D00),
+    );
+
+    // --- Tick marks with smooth gradient ---
     final tickPaint = Paint()..strokeCap = StrokeCap.round;
+    final int range = _visibleRange.toInt();
 
-    final int rangeInt = visibleRange.toInt();
+    for (int i = -range; i <= range; i++) {
+      if (i == 0) continue;
 
-    for (int i = -rangeInt; i <= rangeInt; i++) {
-      if (i == 0) continue; // skip center (orange indicator is there)
-
-      final double x = centerX + i * degreeSpacing;
+      final double x = centerX + i * _tickSpacing;
       if (x < 0 || x > size.width) continue;
 
-      // Calculate opacity: 1.0 at center, fading to 0.15 at edges
-      final double distanceRatio = i.abs() / visibleRange;
-      final double opacity = (1.0 - distanceRatio).clamp(0.15, 1.0);
+      // Smooth cubic falloff (smoothstep)
+      final double t = i.abs() / _visibleRange;
+      final double opacity = _smoothStep(1.0 - t).clamp(0.06, 1.0);
 
-      // Determine tick height based on degree value
-      final int absDeg = ((rotation + i) % 360).abs().round();
-      double tickHeight;
-      double strokeWidth;
+      // Tick height & width based on degree position
+      final int degreeValue = ((rotation + i) % 360).round();
+      final bool isMajor = degreeValue % 10 == 0;
+      final bool isMedium = degreeValue % 5 == 0;
 
-      if (absDeg % 10 == 0) {
-        // Major tick every 10 degrees
-        tickHeight = 22;
-        strokeWidth = 2.0;
-      } else if (absDeg % 5 == 0) {
-        // Medium tick every 5 degrees
-        tickHeight = 16;
-        strokeWidth = 1.5;
+      double tickH;
+      double strokeW;
+
+      if (isMajor) {
+        tickH = 20;
+        strokeW = 1.8;
+      } else if (isMedium) {
+        tickH = 14;
+        strokeW = 1.3;
       } else {
-        // Minor tick every degree
-        tickHeight = 10;
-        strokeWidth = 1.2;
+        tickH = 9;
+        strokeW = 1.0;
       }
 
-      tickPaint.color = Color.fromRGBO(60, 60, 60, opacity);
-      tickPaint.strokeWidth = strokeWidth;
+      // Vertically center ticks, shifted slightly down
+      final tickMidY = centerY + 2;
+
+      final int alpha = (opacity * 230).round().clamp(0, 255);
+      tickPaint
+        ..color = Color.fromARGB(alpha, 45, 45, 45)
+        ..strokeWidth = strokeW;
 
       canvas.drawLine(
-        Offset(x, tickBottom - tickHeight),
-        Offset(x, tickBottom),
+        Offset(x, tickMidY - tickH / 2),
+        Offset(x, tickMidY + tickH / 2),
         tickPaint,
       );
     }
   }
 
+  /// Hermite smoothstep for natural opacity falloff
+  double _smoothStep(double x) {
+    final c = x.clamp(0.0, 1.0);
+    return c * c * (3 - 2 * c);
+  }
+
   @override
-  bool shouldRepaint(covariant GradientRulerPainter oldDelegate) =>
+  bool shouldRepaint(covariant ProRulerPainter oldDelegate) =>
       oldDelegate.rotation != rotation;
 }
