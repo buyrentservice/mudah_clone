@@ -1,5 +1,4 @@
 import 'dart:io';
-import 'dart:math';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:image/image.dart' as img;
@@ -486,8 +485,6 @@ class GradientRulerPainter extends CustomPainter {
       tickPaint.color = Color.fromRGBO(60, 60, 60, opacity);
       tickPaint.strokeWidth = strokeWidth;
 
-      final tickTop = centerY + (tickBottom - centerY - tickHeight) / 2 +
-          (tickHeight > 16 ? -2 : 2);
       canvas.drawLine(
         Offset(x, tickBottom - tickHeight),
         Offset(x, tickBottom),
