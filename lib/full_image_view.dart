@@ -434,7 +434,6 @@ class GradientRulerPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final centerX = size.width / 2;
-    final centerY = size.height / 2;
     final tickBottom = size.height - 4;
 
     // Draw center orange indicator line
