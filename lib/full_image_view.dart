@@ -2,7 +2,6 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:image/image.dart' as img;
-import 'package:image_cropper/image_cropper.dart';
 
 class FullImageView extends StatefulWidget {
   final File image;
@@ -29,6 +28,11 @@ class _FullImageViewState extends State<FullImageView>
   double rotationStart = 0;
   double rotationVelocity = 0;
   final double friction = 0.95;
+
+  // Crop state
+  bool isCropped = false;
+  double cropBoxSize = 0;
+  Offset cropBoxCenter = Offset.zero;
 
   // Ruler show/hide animation
   late AnimationController _rulerAnimController;
@@ -91,6 +95,7 @@ class _FullImageViewState extends State<FullImageView>
       currentRotation += 360;
     }
     currentImage = img.copyRotate(originalImage, angle: currentRotation);
+    isCropped = false;
     _updateDisplay();
     _showRuler();
   }
@@ -99,18 +104,21 @@ class _FullImageViewState extends State<FullImageView>
     _pushToUndo();
     currentRotation = (currentRotation + 90) % 360;
     currentImage = img.copyRotate(originalImage, angle: currentRotation);
+    isCropped = false;
     _updateDisplay();
   }
 
   void _flipHorizontal() {
     _pushToUndo();
     currentImage = img.flipHorizontal(currentImage);
+    isCropped = false;
     _updateDisplay();
   }
 
   void _flipVertical() {
     _pushToUndo();
     currentImage = img.flipVertical(currentImage);
+    isCropped = false;
     _updateDisplay();
   }
 
@@ -118,6 +126,7 @@ class _FullImageViewState extends State<FullImageView>
     if (undoStack.isNotEmpty) {
       redoStack.add(img.copyResize(currentImage, width: currentImage.width));
       currentImage = undoStack.removeLast();
+      isCropped = false;
       _updateDisplay();
     }
   }
@@ -126,6 +135,7 @@ class _FullImageViewState extends State<FullImageView>
     if (redoStack.isNotEmpty) {
       undoStack.add(img.copyResize(currentImage, width: currentImage.width));
       currentImage = redoStack.removeLast();
+      isCropped = false;
       _updateDisplay();
     }
   }
@@ -134,35 +144,69 @@ class _FullImageViewState extends State<FullImageView>
     _pushToUndo();
     currentImage = img.copyResize(originalImage, width: originalImage.width);
     currentRotation = 0;
+    isCropped = false;
     _updateDisplay();
   }
 
-  Future<void> _cropImage() async {
-    _pushToUndo();
-    final tempDir = Directory.systemTemp;
-    final tempFile = await File(
-      '${tempDir.path}/temp_crop.jpg',
-    ).writeAsBytes(img.encodeJpg(currentImage));
+  void _cropImage() {
+    if (displayBytes == null) return;
 
-    final croppedFile = await ImageCropper().cropImage(
-      sourcePath: tempFile.path,
-      uiSettings: [
-        AndroidUiSettings(
-          toolbarTitle: 'Crop Image',
-          toolbarColor: Colors.black,
-          toolbarWidgetColor: Colors.white,
-          initAspectRatio: CropAspectRatioPreset.original,
-          lockAspectRatio: false,
-        ),
-        IOSUiSettings(title: 'Crop Image'),
-      ],
+    final screenSize = MediaQuery.of(context).size;
+    cropBoxSize =
+        (screenSize.width < screenSize.height
+            ? screenSize.width
+            : screenSize.height) *
+        0.6;
+    cropBoxCenter = Offset(screenSize.width / 2, screenSize.height / 2);
+
+    final imgRatio = currentImage.width / currentImage.height;
+    double displayWidth = screenSize.width;
+    double displayHeight = screenSize.height;
+    if (screenSize.width / screenSize.height > imgRatio) {
+      displayWidth = screenSize.height * imgRatio;
+    } else {
+      displayHeight = screenSize.width / imgRatio;
+    }
+
+    final offsetX = (screenSize.width - displayWidth) / 2;
+    final offsetY = (screenSize.height - displayHeight) / 2;
+
+    final cropLeft =
+        ((cropBoxCenter.dx - cropBoxSize / 2 - offsetX) /
+                displayWidth *
+                currentImage.width)
+            .round()
+            .clamp(0, currentImage.width - 1);
+    final cropTop =
+        ((cropBoxCenter.dy - cropBoxSize / 2 - offsetY) /
+                displayHeight *
+                currentImage.height)
+            .round()
+            .clamp(0, currentImage.height - 1);
+    final cropW = (cropBoxSize / displayWidth * currentImage.width)
+        .round()
+        .clamp(1, currentImage.width - cropLeft);
+    final cropH = (cropBoxSize / displayHeight * currentImage.height)
+        .round()
+        .clamp(1, currentImage.height - cropTop);
+
+    _pushToUndo();
+    currentImage = img.copyCrop(
+      currentImage,
+      x: cropLeft,
+      y: cropTop,
+      width: cropW,
+      height: cropH,
     );
 
-    if (croppedFile != null) {
-      final bytes = await croppedFile.readAsBytes();
-      currentImage = img.decodeImage(bytes)!;
-      _updateDisplay();
-    }
+    // Reset rotation to 0 because the rotation is already baked into the
+    // pixel data via img.copyRotate. Without this, Transform.rotate would
+    // apply the rotation a second time, causing the cropped image to appear
+    // rotated inside the red dotted box.
+    currentRotation = 0;
+
+    _updateDisplay();
+    isCropped = true;
   }
 
   void _showRuler() {
@@ -221,6 +265,9 @@ class _FullImageViewState extends State<FullImageView>
 
   @override
   Widget build(BuildContext context) {
+    final maxWidth = MediaQuery.of(context).size.width;
+    final maxHeight = MediaQuery.of(context).size.height;
+
     return Scaffold(
       backgroundColor: Colors.black,
       appBar: AppBar(
@@ -229,68 +276,112 @@ class _FullImageViewState extends State<FullImageView>
         iconTheme: const IconThemeData(color: Colors.white),
         elevation: 0,
       ),
-      body: Stack(
-        children: [
-          // Image
-          Positioned.fill(
-            child: Padding(
-              padding: const EdgeInsets.only(bottom: 140),
-              child: Center(
-                child: displayBytes != null
-                    ? InteractiveViewer(
+      body: GestureDetector(
+        behavior: HitTestBehavior.translucent,
+        onTap: () {
+          if (showRuler) _hideRuler();
+        },
+        child: Stack(
+          alignment: Alignment.center,
+          children: [
+            // Image display
+            if (displayBytes != null)
+              Center(
+                child: isCropped
+                    ? SizedBox(
+                        width: cropBoxSize,
+                        height: cropBoxSize,
+                        child: Image.memory(displayBytes!, fit: BoxFit.fill),
+                      )
+                    : InteractiveViewer(
                         panEnabled: true,
                         scaleEnabled: true,
-                        minScale: 1.0,
+                        minScale: 0.05,
                         maxScale: 4.0,
-                        child: Image.memory(displayBytes!, fit: BoxFit.contain),
-                      )
-                    : const CircularProgressIndicator(color: Colors.white),
+                        boundaryMargin: const EdgeInsets.all(1000),
+                        child: Image.memory(
+                          displayBytes!,
+                          fit: BoxFit.contain,
+                        ),
+                      ),
+              )
+            else
+              const Center(
+                child: CircularProgressIndicator(color: Colors.white),
               ),
-            ),
-          ),
 
-          // Ruler with slide + fade animation
-          if (showRuler)
+            // Red dotted overlay (hidden after crop)
+            if (!isCropped)
+              IgnorePointer(
+                child: Center(
+                  child: CustomPaint(
+                    size: Size(maxWidth, maxHeight),
+                    painter: FixedOverlayPainter(),
+                  ),
+                ),
+              ),
+
+            // Ruler with slide + fade animation
+            if (showRuler)
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: 80,
+                child: SlideTransition(
+                  position: _rulerSlideAnim,
+                  child: FadeTransition(
+                    opacity: _rulerFadeAnim,
+                    child: _buildRulerCard(),
+                  ),
+                ),
+              ),
+
+            // Bottom toolbar
             Positioned(
+              bottom: 20,
               left: 0,
               right: 0,
-              bottom: 80,
-              child: SlideTransition(
-                position: _rulerSlideAnim,
-                child: FadeTransition(
-                  opacity: _rulerFadeAnim,
-                  child: _buildRulerCard(),
+              child: Center(
+                child: Wrap(
+                  alignment: WrapAlignment.center,
+                  spacing: 12,
+                  runSpacing: 12,
+                  children: [
+                    _buildIconButtonWithLongPress(
+                      Icons.rotate_right,
+                      () => _rotateCropperStyle(clockwise: true),
+                      () => _rotateCropperStyle(clockwise: false),
+                    ),
+                    _buildIconButton(Icons.flip, () {
+                      _flipHorizontal();
+                      _hideRuler();
+                    }),
+                    _buildIconButton(Icons.flip, () {
+                      _flipVertical();
+                      _hideRuler();
+                    }, rotateIcon: true),
+                    _buildIconButton(Icons.crop, () {
+                      _cropImage();
+                      _hideRuler();
+                    }),
+                    _buildIconButton(Icons.undo, () {
+                      _undo();
+                      _hideRuler();
+                    }),
+                    _buildIconButton(Icons.redo, () {
+                      _redo();
+                      _hideRuler();
+                    }),
+                    _buildIconButton(Icons.restore, () {
+                      _reset();
+                      _hideRuler();
+                    }),
+                  ],
                 ),
               ),
             ),
-
-          // Toolbar icons
-          Positioned(
-            bottom: 20,
-            left: 0,
-            right: 0,
-            child: Center(
-              child: Wrap(
-                alignment: WrapAlignment.center,
-                spacing: 12,
-                runSpacing: 12,
-                children: [
-                  _buildIconButtonWithLongPress(
-                    Icons.rotate_right,
-                    () => _rotateCropperStyle(clockwise: true),
-                    () => _rotateCropperStyle(clockwise: false),
-                  ),
-                  _buildIconButton(Icons.flip, _flipHorizontal),
-                  _buildIconButton(Icons.flip, _flipVertical),
-                  _buildIconButton(Icons.crop, _cropImage),
-                  _buildIconButton(Icons.undo, _undo),
-                  _buildIconButton(Icons.redo, _redo),
-                  _buildIconButton(Icons.restore, _reset),
-                ],
-              ),
-            ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -365,6 +456,7 @@ class _FullImageViewState extends State<FullImageView>
             originalImage,
             angle: currentRotation,
           );
+          isCropped = false;
           _updateDisplay();
         });
       },
@@ -413,6 +505,7 @@ class _FullImageViewState extends State<FullImageView>
             originalImage,
             angle: currentRotation,
           );
+          isCropped = false;
           _updateDisplay();
           rotationVelocity = details.delta.dx / 3;
         });
@@ -480,12 +573,104 @@ class _FullImageViewState extends State<FullImageView>
     );
   }
 
-  Widget _buildIconButton(IconData icon, VoidCallback onTap) {
+  Widget _buildIconButton(
+    IconData icon,
+    VoidCallback onTap, {
+    bool rotateIcon = false,
+  }) {
     return InkWell(
       onTap: onTap,
-      child: Icon(icon, color: Colors.white, size: 28),
+      child: rotateIcon
+          ? Transform.rotate(
+              angle: 3.1415927 / 2,
+              child: Icon(icon, color: Colors.white, size: 28),
+            )
+          : Icon(icon, color: Colors.white, size: 28),
     );
   }
+}
+
+/// Fixed red dotted overlay painter - draws a semi-transparent overlay with a
+/// clear rectangular cutout bordered by a red dashed line.
+class FixedOverlayPainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()..color = const Color.fromRGBO(0, 0, 0, 0.5);
+
+    final boxSize =
+        (size.width < size.height ? size.width : size.height) * 0.6;
+    final rect = Rect.fromCenter(
+      center: Offset(size.width / 2, size.height / 2),
+      width: boxSize,
+      height: boxSize,
+    );
+
+    canvas.saveLayer(Rect.fromLTWH(0, 0, size.width, size.height), Paint());
+    canvas.drawRect(Rect.fromLTWH(0, 0, size.width, size.height), paint);
+
+    final clearPaint = Paint()..blendMode = BlendMode.clear;
+    canvas.drawRect(rect, clearPaint);
+    canvas.restore();
+
+    final borderPaint = Paint()
+      ..color = Colors.red
+      ..strokeWidth = 2.0
+      ..style = PaintingStyle.stroke;
+
+    const double dashWidth = 6.0;
+    const double dashSpace = 4.0;
+
+    // Top edge
+    double startX = rect.left;
+    while (startX < rect.right) {
+      final endX = (startX + dashWidth).clamp(rect.left, rect.right);
+      canvas.drawLine(
+        Offset(startX, rect.top),
+        Offset(endX, rect.top),
+        borderPaint,
+      );
+      startX += dashWidth + dashSpace;
+    }
+
+    // Right edge
+    double startY = rect.top;
+    while (startY < rect.bottom) {
+      final endY = (startY + dashWidth).clamp(rect.top, rect.bottom);
+      canvas.drawLine(
+        Offset(rect.right, startY),
+        Offset(rect.right, endY),
+        borderPaint,
+      );
+      startY += dashWidth + dashSpace;
+    }
+
+    // Bottom edge
+    startX = rect.left;
+    while (startX < rect.right) {
+      final endX = (startX + dashWidth).clamp(rect.left, rect.right);
+      canvas.drawLine(
+        Offset(startX, rect.bottom),
+        Offset(endX, rect.bottom),
+        borderPaint,
+      );
+      startX += dashWidth + dashSpace;
+    }
+
+    // Left edge
+    startY = rect.top;
+    while (startY < rect.bottom) {
+      final endY = (startY + dashWidth).clamp(rect.top, rect.bottom);
+      canvas.drawLine(
+        Offset(rect.left, startY),
+        Offset(rect.left, endY),
+        borderPaint,
+      );
+      startY += dashWidth + dashSpace;
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
 
 /// Professional ruler painter with smooth gradient-opacity tick marks.
