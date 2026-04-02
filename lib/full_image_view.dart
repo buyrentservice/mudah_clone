@@ -299,12 +299,9 @@ class _FullImageViewState extends State<FullImageView>
                         minScale: 0.05,
                         maxScale: 4.0,
                         boundaryMargin: const EdgeInsets.all(1000),
-                        child: Transform.rotate(
-                          angle: currentRotation * 3.1415927 / 180,
-                          child: Image.memory(
-                            displayBytes!,
-                            fit: BoxFit.contain,
-                          ),
+                        child: Image.memory(
+                          displayBytes!,
+                          fit: BoxFit.contain,
                         ),
                       ),
               )
